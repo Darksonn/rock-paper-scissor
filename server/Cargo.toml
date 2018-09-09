@@ -1,0 +1,7 @@
+[package]
+name = "server"
+version = "0.1.0"
+authors = ["Alice Ryhl <alice@ryhl.io>"]
+
+[dependencies]
+rustyline = "2.1"
