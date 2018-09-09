@@ -42,13 +42,13 @@ class Client(strategy: () => Strategy, server: Server) {
       var move = strat.pick(rand)
       server.out.write(move2Char(move))
       server.out.flush()
-      while ("RPS" contains next()) {
+      while ("rps" contains next()) {
         strat = strat.result(move, char2Move(it))
         move = strat.pick(rand)
         server.out.write(move2Char(move))
         server.out.flush()
       }
-      if ("rps" contains it) strat = strat.result(move, char2Move(it))
+      if ("RPS" contains it) strat = strat.result(move, char2Move(it))
     }
   }
 }

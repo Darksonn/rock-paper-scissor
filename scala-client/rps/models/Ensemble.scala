@@ -8,7 +8,7 @@ class Ensemble(model: Vector[(Predictor, Double)], decay: Double) extends Predic
   }
 
   def _update(self: Move, other: Move): Predictor = {
-    val preds = model.map { case (model, prob) => (model, prob, model.prob(other)) }
+    val preds = model.map { case (model, prob) => (model.update(self, other), prob, model.prob(other)) }
     val likelihood = preds.map(_._3).sum
     val updated = preds.map { case (model, prob, pred) => (model, pred * prob / likelihood) }
     val escort = updated.map { case (model, prob) => (model, Math.pow(prob, decay)) }

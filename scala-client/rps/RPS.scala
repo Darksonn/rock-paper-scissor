@@ -49,3 +49,8 @@ class StrategyPredictor(strat: Strategy) extends Predictor {
   def _prob(move: Move) = strat.move.get(move).getOrElse(0.0)
   def _update(self: Move, other: Move) = new StrategyPredictor(strat.result(other, self))
 }
+class TrivialStrategy(pick: Move) extends Strategy {
+  def name = pick+"Bot"
+  def _move = Map(pick -> 1.0)
+  def _result(self: Move, other: Move) = this
+}
