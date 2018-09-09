@@ -1,143 +1,18 @@
 use std::sync::mpsc::{Sender, Receiver, channel};
-use std::net::{TcpStream, SocketAddr};
-use std::io::{Result as IoResult, Error as IoError, Read, Write, ErrorKind};
-use std::str::from_utf8;
+use std::io::{Result as IoResult};
 use rustyline::error::ReadlineError;
+use client::*;
+use statrs::function::erf::erf;
 
+extern crate statrs;
 extern crate rustyline;
 mod listen;
+mod client;
 
-#[derive(Clone,Copy,Debug)]
-enum Move {
-    Rock, Paper, Scissor,
-}
-#[derive(Clone,Copy,Debug)]
-enum GameOutcome {
-    Win, Lose, Tie,
-}
-impl Move {
-    pub fn try_from(byte: u8) -> IoResult<Move> {
-        Ok(match byte as char {
-            'r' => {
-                Move::Rock
-            },
-            'p' => {
-                Move::Paper
-            },
-            's' => {
-                Move::Scissor
-            },
-            _ => {
-                return Err(IoError::new(ErrorKind::InvalidData,
-                    format!("byte {} is not r, p or s", byte)));
-            }
-        })
-    }
-    /// Returns win if self wins.
-    pub fn game_outcome(self, other: Move) -> GameOutcome {
-        match self {
-            Move::Rock => {
-                match other {
-                    Move::Rock => GameOutcome::Tie,
-                    Move::Paper => GameOutcome::Lose,
-                    Move::Scissor => GameOutcome::Win,
-                }
-            },
-            Move::Paper => {
-                match other {
-                    Move::Rock => GameOutcome::Win,
-                    Move::Paper => GameOutcome::Tie,
-                    Move::Scissor => GameOutcome::Lose,
-                }
-            },
-            Move::Scissor => {
-                match other {
-                    Move::Rock => GameOutcome::Lose,
-                    Move::Paper => GameOutcome::Win,
-                    Move::Scissor => GameOutcome::Tie,
-                }
-            },
-        }
-    }
-    pub fn into_u8(self) -> u8 {
-        (match self {
-            Move::Rock => 'r',
-            Move::Paper => 'p',
-            Move::Scissor => 's',
-        }) as u8
-    }
-    pub fn into_u8_end(self) -> u8 {
-        self.into_u8() ^ (' ' as u8)
-    }
-}
-struct Client {
-    pub addr: SocketAddr,
-    stream: TcpStream,
-    pub name: String,
-}
-impl Client {
-    pub fn new(addr: SocketAddr, mut stream: TcpStream) -> IoResult<Client> {
-        let len = {
-            let mut len_buf = [0];
-            let read = stream.read_exact(&mut len_buf)?;
-            usize::from(len_buf[0])
-        };
-        let name = {
-            let mut name_buf = [0; 257];
-            stream.read_exact(&mut name_buf[0..len+1])?;
-            match from_utf8(&name_buf[0..len]) {
-                Ok(s) => String::from(s),
-                Err(_) => return Err(IoError::new(ErrorKind::InvalidData,
-                                                  "name invalid utf8")),
-            }
-        };
-        Ok(Client {
-            addr,
-            stream,
-            name,
-        })
-    }
-    pub fn shutdown(mut self) {
-        let _ = self.stream.write(&['x' as u8]);
-        let _ = self.stream.flush();
-    }
-    pub fn new_game(&mut self) -> IoResult<()> {
-        self.stream.write(&['n' as u8])?;
-        self.stream.flush()?;
-        Ok(())
-    }
-    pub fn cont_game(&mut self, m: Move) -> IoResult<()> {
-        self.stream.write(&[m.into_u8()])?;
-        self.stream.flush()?;
-        Ok(())
-    }
-    pub fn end_game(&mut self, m: Move) -> IoResult<()> {
-        self.stream.write(&[m.into_u8_end()])?;
-        self.stream.flush()?;
-        Ok(())
-    }
-    pub fn get_move(&mut self) -> IoResult<Move> {
-        let mut buf = [0];
-        self.stream.read_exact(&mut buf)?;
-        Move::try_from(buf[0])
-    }
-    pub fn ping(&mut self) -> IoResult<()> {
-        self.stream.write(&[' ' as u8])?;
-        self.stream.flush()?;
-        let mut buf = [0];
-        self.stream.read_exact(&mut buf)?;
-        if buf[0] == (' ' as u8) {
-            Ok(())
-        } else {
-            Err(IoError::new(ErrorKind::InvalidData,
-                format!("invalid ping response got {} expected space.", buf[0] as char)))
-        }
-    }
-}
-
+#[allow(dead_code)]
 struct State {
-    new_clients_send: Sender<(TcpStream, SocketAddr)>,
-    new_clients: Receiver<(TcpStream, SocketAddr)>,
+    new_clients_send: Sender<Client>,
+    new_clients: Receiver<Client>,
     listen_messages_send: Sender<listen::ListenMessage>,
     listen_messages: Receiver<listen::ListenMessage>,
     shutdown_listen: Vec<listen::ShutdownHandle>,
@@ -151,17 +26,8 @@ impl State {
                 println!("{}", io);
             }
         }
-        while let Ok((stream, addr)) = self.new_clients.try_recv() {
-            println!("New connection from {}", addr);
-            match Client::new(addr, stream) {
-                Ok(client) => {
-                    println!("Bot {} has name {}", self.clients.len(), client.name);
-                    self.clients.push(client);
-                },
-                Err(err) => {
-                    println!("Handshake failed.\n{}", err);
-                },
-            };
+        while let Ok(client) = self.new_clients.try_recv() {
+            self.clients.push(client);
         }
     }
     pub fn ping(&mut self) {
@@ -185,6 +51,25 @@ impl State {
             println!("Client {} is called {}.", i, client.name);
         }
     }
+    pub fn set_timeout(&mut self, timeout: Option<u64>) {
+        let mut indexes = Vec::new();
+        for (i, client) in self.clients.iter_mut().enumerate() {
+            let client_res = match timeout {
+                Some(t) => client.set_timeout(t),
+                None => client.remove_timeout(),
+            };
+            match client_res {
+                Ok(()) => { },
+                Err(err) => {
+                    println!("{}\nRemoving client {}.", err, client.name);
+                    indexes.push(i);
+                },
+            }
+        }
+        for i in indexes.iter().rev().cloned() {
+            self.clients.remove(i);
+        }
+    }
     pub fn long_battle(&mut self, bot1: usize, bot2: usize, steps: usize) {
         if self.clients.len() < bot1 {
             println!("no such bot {}", bot1);
@@ -201,6 +86,8 @@ impl State {
             },
             Err(err) => {
                 println!("battle failed: {}", err);
+                let _ = self.clients[bot1].destroy_game();
+                let _ = self.clients[bot2].destroy_game();
             },
         }
     }
@@ -210,6 +97,8 @@ impl State {
         bot2: usize,
         steps: usize
     ) -> IoResult<()> {
+        use std::time::Instant;
+        let now = Instant::now();
         self.clients[bot1].new_game()?;
         self.clients[bot2].new_game()?;
         let mut wins1 = 0;
@@ -238,9 +127,22 @@ impl State {
                 self.clients[bot2].cont_game(move1)?;
             }
         }
+
+        let diff = (wins1 - wins2) as f64;
+        let mean = 0f64;
+        let stddev_times_sqrt2 = ((4*steps) as f64 / 3f64).sqrt();
+        let cdf1 = 0.5 * (1. + erf((diff - mean)/(stddev_times_sqrt2)));
+        let cdf2 = 0.5 * (1. + erf((mean - diff)/(stddev_times_sqrt2)));
+
         println!("{} won {} times.", self.clients[bot1].name, wins1);
         println!("{} won {} times.", self.clients[bot2].name, wins2);
         println!("There were {} ties.", ties);
+        println!("CDF1: {:.8}", cdf1);
+        println!("CDF2: {:.8}", cdf2);
+        let duration = now.elapsed();
+        let duration = duration.as_secs() as f64
+            + duration.subsec_millis() as f64 / 1000f64;
+        println!("Game finished in {:.2} s.", duration);
         Ok(())
     }
     pub fn shutdown(self) {
@@ -296,16 +198,82 @@ fn main() {
             Some(c) => c,
             None => continue,
         };
-        if cmd == "exit" {
+        if cmd == "exit" || cmd == "quit" {
             break;
         }
         if cmd == "ping" {
+            state.print_messages();
             state.ping();
         }
+        if cmd == "notimeout" {
+            state.set_timeout(None);
+            println!("Removing timeout.");
+        }
+        if cmd == "timeout" {
+            let timeout: u64 = match chunks.next() {
+                Some(line) => {
+                    match line.parse() {
+                        Ok(index) => index,
+                        Err(_err) => {
+                            println!("{} is not a number.", line);
+                            continue;
+                        }
+                    }
+                },
+                None => {
+                    println!("Timeout requires an argument.");
+                    continue;
+                }
+            };
+            state.set_timeout(Some(timeout));
+            println!("Setting timeout to {} secs.", timeout);
+        }
         if cmd == "battle" {
-            let bot1: usize = chunks.next().unwrap().parse().unwrap();
-            let bot2: usize = chunks.next().unwrap().parse().unwrap();
-            let battles: usize = chunks.next().unwrap().parse().unwrap();
+            let bot1: usize = match chunks.next() {
+                Some(line) => {
+                    match line.parse() {
+                        Ok(index) => index,
+                        Err(_err) => {
+                            println!("{} is not a number.", line);
+                            continue;
+                        }
+                    }
+                },
+                None => {
+                    println!("Battle requires three arguments.");
+                    continue;
+                }
+            };
+            let bot2: usize = match chunks.next() {
+                Some(line) => {
+                    match line.parse() {
+                        Ok(index) => index,
+                        Err(_err) => {
+                            println!("{} is not a number.", line);
+                            continue;
+                        }
+                    }
+                },
+                None => {
+                    println!("Battle requires three arguments.");
+                    continue;
+                }
+            };
+            let battles: usize = match chunks.next() {
+                Some(line) => {
+                    match line.parse() {
+                        Ok(index) => index,
+                        Err(_err) => {
+                            println!("{} is not a number.", line);
+                            continue;
+                        }
+                    }
+                },
+                None => {
+                    println!("Battle requires three arguments.");
+                    continue;
+                }
+            };
             state.long_battle(bot1, bot2, battles);
         }
     }

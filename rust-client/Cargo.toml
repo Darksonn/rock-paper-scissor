@@ -1,8 +1,6 @@
 [package]
-name = "server"
+name = "rust-client"
 version = "0.1.0"
 authors = ["Alice Ryhl <alice@ryhl.io>"]
 
 [dependencies]
-rustyline = "2.1"
-statrs = "0.9"

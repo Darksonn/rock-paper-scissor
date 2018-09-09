@@ -1,7 +1,9 @@
 use std::sync::mpsc::{channel, Sender, TryRecvError};
-use std::net::{TcpListener, TcpStream, ToSocketAddrs, SocketAddr};
+use std::net::{TcpListener, ToSocketAddrs};
 use std::io::Error as IoError;
 use std::thread::{JoinHandle, spawn, yield_now};
+
+use client::Client;
 
 pub struct ListenMessage {
     pub desc: &'static str,
@@ -34,7 +36,7 @@ impl ShutdownHandle {
 
 pub fn listen_thread<A: ToSocketAddrs + Send + 'static>(
     addr: A,
-    new_clients: Sender<(TcpStream, SocketAddr)>,
+    new_clients: Sender<Client>,
     messages: Sender<ListenMessage>
 ) -> ShutdownHandle {
     let (shutdown_send, shutdown_recv) = channel();
@@ -56,8 +58,16 @@ pub fn listen_thread<A: ToSocketAddrs + Send + 'static>(
         }
         loop {
             match listen.accept() {
-                Ok(res) => {
-                    new_clients.send(res).unwrap();
+                Ok((stream, addr)) => {
+                    match Client::new(addr, stream) {
+                        Ok(client) => {
+                            new_clients.send(client).unwrap();
+                        },
+                        Err(err) => {
+                            messages.send(ListenMessage::new(
+                                    "Handshake failed.", err)).unwrap();
+                        },
+                    };
                 },
                 Err(err) => {
                     if err.kind() == ::std::io::ErrorKind::WouldBlock {
